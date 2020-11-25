@@ -273,4 +273,22 @@ class SmokeTest {
             verifyEnginesListShortcutContains("YouTube")
         }
     }
+
+    @Test
+    fun toggleSearchSuggestions() {
+        // Goes through the settings and changes the search suggestion toggle, then verifies it changes.
+        homeScreen {
+        }.openNavigationToolbar {
+            verifySearchSuggestionsAreMoreThan(1, "mozilla")
+        }.goBack {
+        }.openThreeDotMenu {
+        }.openSettings {
+        }.openSearchSubMenu {
+            disableShowSearchSuggestions()
+        }.goBack {
+        }.goBack {
+        }.openNavigationToolbar {
+            verifySearchSuggestionsAreEqualTo(0, "mozilla")
+        }
+    }
 }

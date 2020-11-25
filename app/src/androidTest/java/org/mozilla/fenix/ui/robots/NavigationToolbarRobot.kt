@@ -25,6 +25,7 @@ import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
 import kotlinx.android.synthetic.main.fragment_search_dialog.view.*
 import org.hamcrest.CoreMatchers.anyOf
@@ -258,7 +259,12 @@ private fun assertSuggestionsAreMoreThan(suggestionSize: Int, searchTerm: String
     mDevice.waitForIdle()
     awesomeBar().perform(typeText(searchTerm))
 
-    mDevice.waitForIdle()
+    mDevice.findObject(
+        UiSelector()
+            .fromParent(UiSelector().resourceId("org.mozilla.fenix.debug:id/awesome_bar"))
+            .index(2)
+    ).waitForExists(waitingTime)
+
     onView(withId(R.id.awesome_bar)).check(suggestionsAreGreaterThan(suggestionSize))
 }
 
