@@ -27,11 +27,6 @@ object FeatureFlags {
     const val externalDownloadManager = true
 
     /**
-     * Enables swipe to delete in bookmarks
-     */
-    val bookmarkSwipeToDelete = Config.channel.isNightlyOrDebug
-
-    /**
      * Enables ETP cookie purging
      */
     val etpCookiePurging = Config.channel.isNightlyOrDebug
@@ -41,4 +36,9 @@ object FeatureFlags {
      * all experiments.
      */
     val nimbusExperiments = Config.channel.isNightlyOrDebug
+
+    /**
+     * Enables the new MediaSession API.
+     */
+    val newMediaSessionApi = Config.channel.isNightlyOrDebug
 }

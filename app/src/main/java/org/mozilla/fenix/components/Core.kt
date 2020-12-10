@@ -23,7 +23,6 @@ import mozilla.components.browser.session.SessionManager
 import mozilla.components.browser.session.engine.EngineMiddleware
 import mozilla.components.browser.session.storage.SessionStorage
 import mozilla.components.browser.session.undo.UndoMiddleware
-import mozilla.components.browser.state.action.RecentlyClosedAction
 import mozilla.components.browser.state.action.RestoreCompleteAction
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.store.BrowserStore
@@ -40,8 +39,7 @@ import mozilla.components.concept.fetch.Client
 import mozilla.components.feature.customtabs.store.CustomTabsServiceStore
 import mozilla.components.feature.downloads.DownloadMiddleware
 import mozilla.components.feature.logins.exceptions.LoginExceptionStorage
-import mozilla.components.feature.media.RecordingDevicesNotificationFeature
-import mozilla.components.feature.media.middleware.MediaMiddleware
+import mozilla.components.feature.media.middleware.RecordingDevicesMiddleware
 import mozilla.components.feature.pwa.ManifestStorage
 import mozilla.components.feature.pwa.WebAppShortcutManager
 import mozilla.components.feature.readerview.ReaderViewMiddleware
@@ -75,7 +73,6 @@ import org.mozilla.fenix.downloads.DownloadService
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.settings
 import org.mozilla.fenix.perf.lazyMonitored
-import org.mozilla.fenix.media.MediaService
 import org.mozilla.fenix.search.telemetry.ads.AdsTelemetry
 import org.mozilla.fenix.search.telemetry.incontent.InContentTelemetry
 import org.mozilla.fenix.settings.SupportUtils
@@ -83,6 +80,11 @@ import org.mozilla.fenix.settings.advanced.getSelectedLocale
 import org.mozilla.fenix.utils.Mockable
 import org.mozilla.fenix.utils.getUndoDelay
 import java.util.concurrent.TimeUnit
+import mozilla.components.feature.media.MediaSessionFeature
+import mozilla.components.feature.media.middleware.MediaMiddleware
+import org.mozilla.fenix.FeatureFlags.newMediaSessionApi
+import org.mozilla.fenix.media.MediaService
+import org.mozilla.fenix.media.MediaSessionService
 
 /**
  * Component group for all core browser functionality.
@@ -100,7 +102,7 @@ class Core(
      */
     val engine: Engine by lazyMonitored {
         val defaultSettings = DefaultSettings(
-            requestInterceptor = AppRequestInterceptor(context),
+            requestInterceptor = requestInterceptor,
             remoteDebuggingEnabled = context.settings().isRemoteDebuggingEnabled &&
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.M,
             testingModeEnabled = false,
@@ -142,6 +144,15 @@ class Core(
     }
 
     /**
+     * Passed to [engine] to intercept requests for app links,
+     * and various features triggered by page load requests.
+     *
+     * NB: This does not need to be lazy as it is initialized
+     * with the engine on startup.
+     */
+    val requestInterceptor = AppRequestInterceptor(context)
+
+    /**
      * [Client] implementation to be used for code depending on `concept-fetch``
      */
     val client: Client by lazyMonitored {
@@ -171,10 +182,9 @@ class Core(
      * The [BrowserStore] holds the global [BrowserState].
      */
     val store by lazyMonitored {
-        BrowserStore(
-            middleware = listOf(
+        val middlewareList =
+            mutableListOf(
                 RecentlyClosedMiddleware(context, RECENTLY_CLOSED_MAX, engine),
-                MediaMiddleware(context, MediaService::class.java),
                 DownloadMiddleware(context, DownloadService::class.java),
                 ReaderViewMiddleware(),
                 TelemetryMiddleware(
@@ -189,11 +199,17 @@ class Core(
                     context,
                     additionalBundledSearchEngineIds = listOf("reddit", "youtube"),
                     migration = SearchMigration(context)
-                )
-            ) + EngineMiddleware.create(engine, ::findSessionById)
-        ).also {
-            it.dispatch(RecentlyClosedAction.InitializeRecentlyClosedState)
+                ),
+                RecordingDevicesMiddleware(context)
+            )
+
+        if (!newMediaSessionApi) {
+            middlewareList.add(MediaMiddleware(context, MediaService::class.java))
         }
+
+        BrowserStore(
+            middleware = middlewareList + EngineMiddleware.create(engine, ::findSessionById)
+        )
     }
 
     private fun lookupSessionManager(): SessionManager {
@@ -233,10 +249,6 @@ class Core(
             // Install the "cookies" WebExtension and tracks user interaction with SERPs.
             searchTelemetry.install(engine, store)
 
-            // Show an ongoing notification when recording devices (camera, microphone) are used by web content
-            RecordingDevicesNotificationFeature(context, sessionManager)
-                .enable()
-
             // Restore the previous state.
             GlobalScope.launch(Dispatchers.Main) {
                 withContext(Dispatchers.IO) {
@@ -275,6 +287,10 @@ class Core(
                 context, engine, icons, R.drawable.ic_status_logo,
                 permissionStorage.permissionsStorage, HomeActivity::class.java
             )
+
+            if (newMediaSessionApi) {
+                MediaSessionFeature(context, MediaSessionService::class.java, store).start()
+            }
         }
     }
 

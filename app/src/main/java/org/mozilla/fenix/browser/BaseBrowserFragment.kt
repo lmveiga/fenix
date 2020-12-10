@@ -58,7 +58,7 @@ import mozilla.components.feature.contextmenu.ContextMenuFeature
 import mozilla.components.feature.downloads.DownloadsFeature
 import mozilla.components.feature.downloads.manager.FetchDownloadManager
 import mozilla.components.feature.intent.ext.EXTRA_SESSION_ID
-import mozilla.components.feature.media.fullscreen.MediaFullscreenOrientationFeature
+import mozilla.components.feature.media.fullscreen.MediaSessionFullscreenFeature
 import mozilla.components.feature.privatemode.feature.SecureWindowFeature
 import mozilla.components.feature.prompts.PromptFeature
 import mozilla.components.feature.prompts.share.ShareDelegate
@@ -86,6 +86,7 @@ import org.mozilla.fenix.HomeActivity
 import org.mozilla.fenix.IntentReceiverActivity
 import org.mozilla.fenix.NavGraphDirections
 import org.mozilla.fenix.OnBackLongPressedListener
+import org.mozilla.fenix.addons.runIfFragmentIsAttached
 import org.mozilla.fenix.R
 import org.mozilla.fenix.browser.browsingmode.BrowsingMode
 import org.mozilla.fenix.browser.readermode.DefaultReaderModeController
@@ -123,6 +124,8 @@ import org.mozilla.fenix.theme.ThemeManager
 import org.mozilla.fenix.utils.allowUndo
 import org.mozilla.fenix.wifi.SitePermissionsWifiIntegration
 import java.lang.ref.WeakReference
+import mozilla.components.feature.media.fullscreen.MediaFullscreenOrientationFeature
+import org.mozilla.fenix.FeatureFlags.newMediaSessionApi
 
 /**
  * Base fragment extended by [BrowserFragment].
@@ -165,6 +168,8 @@ abstract class BaseBrowserFragment : Fragment(), UserInteractionHandler,
     private val secureWindowFeature = ViewBoundFeatureWrapper<SecureWindowFeature>()
     private var fullScreenMediaFeature =
         ViewBoundFeatureWrapper<MediaFullscreenOrientationFeature>()
+    private var fullScreenMediaSessionFeature =
+        ViewBoundFeatureWrapper<MediaSessionFullscreenFeature>()
     private val searchFeature = ViewBoundFeatureWrapper<SearchFeature>()
     private var pipFeature: PictureInPictureFeature? = null
 
@@ -266,6 +271,7 @@ abstract class BaseBrowserFragment : Fragment(), UserInteractionHandler,
                 isPrivate = activity.browsingModeManager.mode.isPrivate
             )
             val browserToolbarController = DefaultBrowserToolbarController(
+                store = store,
                 activity = activity,
                 navController = findNavController(),
                 metrics = requireComponents.analytics.metrics,
@@ -391,14 +397,25 @@ abstract class BaseBrowserFragment : Fragment(), UserInteractionHandler,
                 view = view
             )
 
-            fullScreenMediaFeature.set(
-                feature = MediaFullscreenOrientationFeature(
-                    requireActivity(),
-                    context.components.core.store
-                ),
-                owner = this,
-                view = view
-            )
+            if (newMediaSessionApi) {
+                fullScreenMediaSessionFeature.set(
+                    feature = MediaSessionFullscreenFeature(
+                        requireActivity(),
+                        context.components.core.store
+                    ),
+                    owner = this,
+                    view = view
+                )
+            } else {
+                fullScreenMediaFeature.set(
+                    feature = MediaFullscreenOrientationFeature(
+                        requireActivity(),
+                        context.components.core.store
+                    ),
+                    owner = this,
+                    view = view
+                )
+            }
 
             val downloadFeature = DownloadsFeature(
                 context.applicationContext,
@@ -572,7 +589,7 @@ abstract class BaseBrowserFragment : Fragment(), UserInteractionHandler,
                         useCase.invoke(request.query)
                         requireActivity().startActivity(openInFenixIntent)
                     } else {
-                        useCase.invoke(request.query, parentSession = parentSession)
+                        useCase.invoke(request.query, parentSessionId = parentSession?.id)
                     }
                 },
                 owner = this,
@@ -620,7 +637,9 @@ abstract class BaseBrowserFragment : Fragment(), UserInteractionHandler,
             context.settings().setSitePermissionSettingListener(viewLifecycleOwner) {
                 // If the user connects to WIFI while on the BrowserFragment, this will update the
                 // SitePermissionsRules (specifically autoplay) accordingly
-                assignSitePermissionsRules()
+                runIfFragmentIsAttached {
+                    assignSitePermissionsRules()
+                }
             }
             assignSitePermissionsRules()
 
@@ -644,8 +663,8 @@ abstract class BaseBrowserFragment : Fragment(), UserInteractionHandler,
                     .collect { tab -> pipModeChanged(tab) }
             }
 
-            view.swipeRefresh.isEnabled =
-                FeatureFlags.pullToRefreshEnabled && context.settings().isPullToRefreshEnabledInBrowser
+            view.swipeRefresh.isEnabled = shouldPullToRefreshBeEnabled()
+
             if (view.swipeRefresh.isEnabled) {
                 val primaryTextColor =
                     ThemeManager.resolveAttribute(R.attr.primaryText, context)
@@ -769,6 +788,13 @@ abstract class BaseBrowserFragment : Fragment(), UserInteractionHandler,
         ).show()
 
         browserToolbarView.expand()
+    }
+
+    @VisibleForTesting
+    internal fun shouldPullToRefreshBeEnabled(): Boolean {
+        return FeatureFlags.pullToRefreshEnabled &&
+                requireContext().settings().isPullToRefreshEnabledInBrowser &&
+                !(requireActivity() as HomeActivity).isImmersive
     }
 
     private fun initializeEngineView(toolbarHeight: Int) {

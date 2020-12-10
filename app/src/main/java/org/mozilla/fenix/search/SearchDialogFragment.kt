@@ -22,8 +22,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewStub
 import android.view.WindowManager
-import android.view.inputmethod.InputMethodManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatDialogFragment
 import androidx.appcompat.content.res.AppCompatResources
@@ -39,9 +39,9 @@ import kotlinx.android.synthetic.main.fragment_search_dialog.*
 import kotlinx.android.synthetic.main.fragment_search_dialog.view.*
 import kotlinx.android.synthetic.main.search_suggestions_hint.view.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import mozilla.components.browser.toolbar.BrowserToolbar
 import mozilla.components.concept.storage.HistoryStorage
 import mozilla.components.feature.qr.QrFeature
@@ -62,7 +62,6 @@ import org.mozilla.fenix.R
 import org.mozilla.fenix.components.metrics.Event
 import org.mozilla.fenix.components.toolbar.ToolbarPosition
 import org.mozilla.fenix.ext.components
-import org.mozilla.fenix.ext.isKeyboardVisible
 import org.mozilla.fenix.ext.requireComponents
 import org.mozilla.fenix.ext.settings
 import org.mozilla.fenix.search.awesomebar.AwesomeBarView
@@ -74,6 +73,7 @@ typealias SearchDialogFragmentStore = SearchFragmentStore
 
 @SuppressWarnings("LargeClass", "TooManyFunctions")
 class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
+    private var voiceSearchButtonAlreadyAdded: Boolean = false
     private lateinit var interactor: SearchDialogInteractor
     private lateinit var store: SearchDialogFragmentStore
     private lateinit var toolbarView: ToolbarView
@@ -83,15 +83,14 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
     private val qrFeature = ViewBoundFeatureWrapper<QrFeature>()
     private val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
 
-    private var keyboardVisible: Boolean = false
-
     override fun onStart() {
         super.onStart()
         // https://github.com/mozilla-mobile/fenix/issues/14279
         // To prevent GeckoView from resizing we're going to change the softInputMode to not adjust
         // the size of the window.
         requireActivity().window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-        if (keyboardVisible) {
+        // Refocus the toolbar editing and show keyboard if the QR fragment isn't showing
+        if (childFragmentManager.findFragmentByTag(QR_FRAGMENT_TAG) == null) {
             toolbarView.view.edit.focus()
         }
     }
@@ -101,7 +100,6 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
         // https://github.com/mozilla-mobile/fenix/issues/14279
         // Let's reset back to the default behavior after we're done searching
         requireActivity().window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        keyboardVisible = toolbarView.view.isKeyboardVisible()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,7 +148,7 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
                 metrics = requireComponents.analytics.metrics,
                 dismissDialog = { dismissAllowingStateLoss() },
                 clearToolbarFocus = {
-                    toolbarView.view.hideKeyboardAndSave()
+                    toolbarView.view.hideKeyboard()
                     toolbarView.view.clearFocus()
                 }
             )
@@ -163,7 +161,7 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
             isPrivate,
             view.toolbar,
             requireComponents.core.engine
-        ).also(::addSearchButton)
+        )
 
         awesomeBarView = AwesomeBarView(
             activity,
@@ -172,7 +170,7 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
         )
 
         view.awesome_bar.setOnTouchListener { _, _ ->
-            view.hideKeyboardAndSave()
+            view.hideKeyboard()
             false
         }
 
@@ -214,7 +212,7 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
         // When displayed above browser, dismisses dialog on clicking scrim area
         if (findNavController().previousBackStackEntry?.destination?.id == R.id.browserFragment) {
             search_wrapper.setOnClickListener {
-                it.hideKeyboardAndSave()
+                it.hideKeyboard()
                 dismissAllowingStateLoss()
             }
         }
@@ -319,6 +317,7 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
             toolbarView.update(it)
             awesomeBarView.update(it)
             firstUpdate = false
+            addVoiceSearchButton(it)
         }
     }
 
@@ -335,17 +334,9 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        resetFocus()
-        toolbarView.view.edit.focus()
-    }
-
     override fun onPause() {
         super.onPause()
-        qr_scan_button.isChecked = false
         view?.hideKeyboard()
-        toolbarView.view.requestFocus()
     }
 
     /*
@@ -353,9 +344,12 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
      * is also dismissing. For example, when clicking a top site on home while this dialog is showing.
      */
     private fun hideDeviceKeyboard() {
-        val imm =
-            requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.toggleSoftInput(InputMethodManager.HIDE_IMPLICIT_ONLY, 0)
+        // If the controller has handled a search event itself, it will clear the focus.
+        if (toolbarView.view.hasFocus()) {
+            val imm =
+                requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.toggleSoftInput(InputMethodManager.HIDE_IMPLICIT_ONLY, 0)
+        }
     }
 
     override fun onDismiss(dialog: DialogInterface) {
@@ -380,7 +374,7 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
                 true
             }
             else -> {
-                view?.hideKeyboardAndSave()
+                view?.hideKeyboard()
                 dismissAllowingStateLoss()
                 true
             }
@@ -483,30 +477,26 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
         }
     }
 
-    private fun addSearchButton(toolbarView: ToolbarView) {
-        val searchEngine = store.state.searchEngineSource.searchEngine
+    private fun addVoiceSearchButton(searchFragmentState: SearchFragmentState) {
+        if (voiceSearchButtonAlreadyAdded) return
+        val searchEngine = searchFragmentState.searchEngineSource.searchEngine
 
-        toolbarView.view.addEditAction(
-            BrowserToolbar.Button(
-                AppCompatResources.getDrawable(requireContext(), R.drawable.ic_microphone)!!,
-                requireContext().getString(R.string.voice_search_content_description),
-                visible = {
-                    searchEngine?.id?.contains("google") == true &&
-                            isSpeechAvailable() &&
-                            requireContext().settings().shouldShowVoiceSearch
-                },
-                listener = ::launchVoiceSearch
+        val isVisible =
+            searchEngine?.id?.contains("google") == true &&
+                    isSpeechAvailable() &&
+                    requireContext().settings().shouldShowVoiceSearch
+
+        if (isVisible) {
+            toolbarView.view.addEditAction(
+                BrowserToolbar.Button(
+                    AppCompatResources.getDrawable(requireContext(), R.drawable.ic_microphone)!!,
+                    requireContext().getString(R.string.voice_search_content_description),
+                    visible = { true },
+                    listener = ::launchVoiceSearch
+                )
             )
-        )
-    }
-
-    /**
-     * Used to save keyboard status on stop/sleep, to be restored later.
-     * See #14559
-     * */
-    private fun View.hideKeyboardAndSave() {
-        keyboardVisible = false
-        this.hideKeyboard()
+            voiceSearchButtonAlreadyAdded = true
+        }
     }
 
     private fun launchVoiceSearch() {
@@ -574,6 +564,7 @@ class SearchDialogFragment : AppCompatDialogFragment(), UserInteractionHandler {
     }
 
     companion object {
+        private const val QR_FRAGMENT_TAG = "MOZAC_QR_FRAGMENT"
         private const val REQUEST_CODE_CAMERA_PERMISSIONS = 1
     }
 }
